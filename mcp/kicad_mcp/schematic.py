@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import netlist as netlist_mod
-from .client import ApiError, KiCadClient
+from .client import ApiError, KiCadClient, running_kicad_socket
 
 from common.commands import base_commands_pb2 as bc  # noqa: E402  (path set up by .client)
 from common.commands import editor_commands_pb2 as ed
@@ -194,9 +194,12 @@ class SchematicSession:
     """
 
     def __init__(self, kicad_cli: Path, socket_path: str | None = None,
-                 symbols_dir: Path | None = None):
+                 symbols_dir: Path | None = None, mode: str = "auto"):
         self.kicad_cli = kicad_cli
         self.symbols_dir = symbols_dir
+        # "auto": use the KiCad window if one is running, else a private headless server;
+        # "headless": always a private server; "live": only the KiCad window.
+        self.mode = mode
         self._process: subprocess.Popen | None = None
         self._client: KiCadClient | None = None
         self._socket_path = socket_path
@@ -211,6 +214,16 @@ class SchematicSession:
 
     def client(self) -> KiCadClient:
         if self._client is None:
+            if self._socket_path is None and self.mode != "headless":
+                # A second KiCad on the same project would let both save over each other, so
+                # work in the user's KiCad window whenever one is running.
+                self._socket_path = running_kicad_socket()
+                self._attached = self._socket_path is not None
+
+                if self._socket_path is None and self.mode == "live":
+                    raise RuntimeError("no KiCad window with the API enabled is running "
+                                       "(Preferences > Plugins > Enable KiCad API)")
+
             if self._socket_path is None:
                 self._start_server()
 
@@ -317,6 +330,7 @@ class SchematicSession:
     @property
     def live(self) -> bool:
         """True when attached to a KiCad window instead of a private headless server."""
+        self.client()  # resolves the mode on first use
         return self._attached
 
     def open_documents(self, doc_type: int) -> list:
@@ -371,6 +385,15 @@ class SchematicSession:
 
         if not sch.exists():
             raise RuntimeError(f"{sch} does not exist")
+
+        lock = sch.with_name(f"~{sch.stem}.kicad_pro.lck")
+
+        if lock.exists():
+            raise RuntimeError(
+                    f"the project is open in another KiCad ({lock.name} exists). Editing it here "
+                    f"too would let both save over each other: open it in your KiCad window and "
+                    f"restart this MCP to work there (live mode), or close it in KiCad. If no KiCad "
+                    f"has it open, the lock is stale and can be deleted.")
 
         self._close_all()
         response = self.client().send(pc.OpenDocument(type=bt.DOCTYPE_SCHEMATIC, path=str(sch)),

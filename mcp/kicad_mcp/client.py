@@ -42,7 +42,12 @@ class KiCadClient:
         self.client_name = client_name
         self.token = ""
         self._socket = pynng.Req0(recv_timeout=timeout_ms, send_timeout=timeout_ms)
-        self._socket.dial(f"ipc://{socket_path}", block=True)
+
+        try:
+            self._socket.dial(f"ipc://{socket_path}", block=True)
+        except Exception:
+            self._socket.close()
+            raise
 
     def close(self) -> None:
         self._socket.close()
@@ -78,3 +83,23 @@ class KiCadClient:
 def default_socket_path() -> str:
     """Socket used by the KiCad GUI when its API server is enabled."""
     return str(Path(os.environ.get("TEMP", "/tmp")) / "kicad" / "api.sock")
+
+
+def running_kicad_socket(timeout_ms: int = 2000) -> str | None:
+    """Socket of a KiCad window that answers API requests right now, or None."""
+    from common.commands import base_commands_pb2  # noqa: E402
+
+    socket_path = default_socket_path()
+
+    try:
+        client = KiCadClient(socket_path, client_name="kicad-mcp-probe", timeout_ms=timeout_ms)
+    except Exception:
+        return None
+
+    try:
+        client.send(base_commands_pb2.GetVersion(), base_commands_pb2.GetVersionResponse)
+        return socket_path
+    except Exception:
+        return None
+    finally:
+        client.close()

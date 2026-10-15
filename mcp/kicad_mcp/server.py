@@ -4,6 +4,7 @@ Configuration (environment variables):
     KICAD_CLI          path to kicad-cli.exe (default: this repository's install build)
     KICAD_SHARE        KiCad share/kicad directory with symbols/ and footprints/
     KICAD_API_SOCKET   attach to a running KiCad API server instead of starting a headless one
+    KICAD_MCP_MODE     auto (default: the KiCad window if one runs, else headless), live, headless
 """
 
 import os
@@ -41,7 +42,8 @@ mcp = MCPServer(
         "add_ground_zone -> autoroute -> run_drc."),
 )
 
-_session = SchematicSession(KICAD_CLI, os.environ.get("KICAD_API_SOCKET"), KICAD_SHARE / "symbols")
+_session = SchematicSession(KICAD_CLI, os.environ.get("KICAD_API_SOCKET"), KICAD_SHARE / "symbols",
+                            os.environ.get("KICAD_MCP_MODE", "auto"))
 # Freerouting 2.5 needs Java 25; prefer the JDK in this Python's conda env over the one on PATH.
 _ENV_JAVA = Path(sys.prefix) / "Library" / "bin" / "java.exe"
 _board = BoardEditor(_session,

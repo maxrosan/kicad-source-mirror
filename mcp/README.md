@@ -82,7 +82,13 @@ O servidor está registrado para este projeto no `.mcp.json` da raiz do reposit�
 
 - `KICAD_CLI`: caminho do `kicad-cli.exe` (padrão: o da instalação deste build).
 - `KICAD_SHARE`: pasta `share/kicad` com `symbols/` e `footprints/`.
-- `KICAD_API_SOCKET`: modo ao vivo; use `%TEMP%\kicad\api.sock` para o KiCad aberto.
+- `KICAD_MCP_MODE`: `auto` (padrão), `live` ou `headless`. No `auto`, se houver um KiCad aberto
+  com a API ligada o MCP trabalha nele (modo ao vivo) e não sobe um segundo KiCad; senão sobe o
+  servidor headless. Dois KiCads no mesmo projeto salvam um por cima do outro (é o aviso
+  "Project ... is already open"), por isso o modo headless também se recusa a abrir um projeto
+  que tem arquivo de trava (`~<projeto>.kicad_pro.lck`). Para criar projeto novo com o KiCad
+  aberto, use `headless`.
+- `KICAD_API_SOCKET`: força o modo ao vivo num socket específico.
 - `FREEROUTING_JAR`: caminho do `.jar` do Freerouting, para o `autoroute`. Instalado em
   `build\tools\freerouting-2.5.0.jar` (release oficial do GitHub, SHA-256 conferido) e já
   configurado no `.mcp.json`.
