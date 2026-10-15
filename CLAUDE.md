@@ -6,6 +6,22 @@ estão em AGENTS.md:
 
 @AGENTS.md
 
+## Repositório e atualizações do KiCad
+
+- `origin`: o fork no GitHub, https://github.com/maxrosan/kicad-source-mirror.
+- `upstream`: o KiCad oficial no GitLab (push desabilitado).
+- `master` fica igual ao upstream; o trabalho vai no branch `max/main`.
+
+To bring in KiCad updates:
+
+```
+git fetch upstream
+```
+
+```
+git merge upstream/master
+```
+
 ## Ambiente conda `kicad`
 
 Quando precisar de uma ferramenta que não está instalada (Python, scripts auxiliares,
