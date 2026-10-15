@@ -99,3 +99,11 @@ build\install\conda-release\bin\kicad.exe
   (error 126)". Repita a cópia depois de atualizar pacotes do ambiente.
 
 `kicad-cli.exe version --format about` serve de teste rápido.
+
+## Bibliotecas e MCP
+
+- As bibliotecas oficiais de símbolos e footprints foram clonadas (`--depth 1`) em
+  `build\install\conda-release\share\kicad\symbols` e `footprints`, e as tabelas globais em
+  `%APPDATA%\kicad\10.99` apontam para elas via `KICAD10_SYMBOL_DIR`/`KICAD10_FOOTPRINT_DIR`.
+- `mcp/` tem o servidor MCP que monta esquemáticos pela API IPC (ver `mcp/README.md`).
+  Ele está registrado no `.mcp.json` da raiz.

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kicad": {
+      "command": "C:\\Users\\mr650\\miniconda3\\envs\\kicad\\python.exe",
+      "args": ["-m", "kicad_mcp"],
+      "env": {
+        "PYTHONPATH": "D:\\Codigos\\Kicad\\mcp",
+        "FREEROUTING_JAR": "D:\\Codigos\\Kicad\\build\\tools\\freerouting-2.5.0.jar"
+      }
+    }
+  }
+}
