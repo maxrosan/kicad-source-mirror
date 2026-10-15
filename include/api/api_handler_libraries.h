@@ -78,6 +78,9 @@ protected:
     HANDLER_RESULT<kiapi::common::commands::GetItemsResponse>
     handleGetItemsFromLibrary( const HANDLER_CONTEXT<kiapi::common::commands::GetItemsFromLibrary>& aCtx );
 
+    HANDLER_RESULT<kiapi::common::commands::SearchLibrariesResponse>
+    handleSearchLibraries( const HANDLER_CONTEXT<kiapi::common::commands::SearchLibraries>& aCtx );
+
     virtual bool packLibraryItem( const LIB_ID& aId, google::protobuf::Any& aOutput ) const
     {
         return false;

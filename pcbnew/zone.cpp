@@ -262,7 +262,12 @@ void ZONE::Serialize( google::protobuf::Any& aContainer ) const
     else
         zone.set_type( types::ZT_GRAPHICAL );
 
-    kiapi::common::PackPolySet( *zone.mutable_outline(), *m_Poly );
+    // Footprint zones store their outline in library coordinates.  Like pads and shapes, the API
+    // exposes them in board coordinates so clients can treat all footprint children the same way.
+    if( GetParentFootprint() )
+        kiapi::common::PackPolySet( *zone.mutable_outline(), GetBoardOutline() );
+    else
+        kiapi::common::PackPolySet( *zone.mutable_outline(), *m_Poly );
 
     zone.set_name( m_zoneName.ToUTF8() );
     zone.set_priority( m_priority );
@@ -392,6 +397,15 @@ bool ZONE::Deserialize( const google::protobuf::Any& aContainer )
 
     if( m_Poly->OutlineCount() == 0 )
         return false;
+
+    // The API uses board coordinates (see Serialize); footprint zones store library coordinates
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+    {
+        const TRANSFORM_TRS& xform = fp->GetTransform();
+
+        for( auto it = m_Poly->IterateWithHoles(); it; it++ )
+            m_Poly->SetVertex( it.GetIndex(), xform.InverseApply( *it ) );
+    }
 
     if( m_isRuleArea )
     {

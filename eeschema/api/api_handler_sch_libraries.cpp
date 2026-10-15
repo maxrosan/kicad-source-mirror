@@ -50,6 +50,17 @@ bool API_HANDLER_SCH_LIBRARIES::packLibraryItem( const LIB_ID& aId, google::prot
     if( !libSymbol )
         return false;
 
+    // A derived symbol only holds the fields it overrides; its pins and graphics live in the
+    // parent.  Serialize the flattened symbol so clients get a complete definition.
+    if( libSymbol->IsDerived() )
+    {
+        if( std::unique_ptr<LIB_SYMBOL> flattened = libSymbol->Flatten() )
+        {
+            flattened->Serialize( aOutput );
+            return true;
+        }
+    }
+
     libSymbol->Serialize( aOutput );
     return true;
 }

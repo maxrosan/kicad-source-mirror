@@ -20,11 +20,15 @@
 
 #include <api/api_handler_libraries.h>
 
+#include <algorithm>
 #include <magic_enum.hpp>
 #include <ranges>
 
+#include <wx/tokenzr.h>
+
 #include <api/api_enums.h>
 #include <api/api_utils.h>
+#include <eda_pattern_match.h>
 #include <libraries/library_manager.h>
 #include <kiway.h>
 #include <pgm_base.h>
@@ -50,6 +54,7 @@ API_HANDLER_LIBRARIES::API_HANDLER_LIBRARIES( LIBRARY_TABLE_TYPE aType ) :
             &API_HANDLER_LIBRARIES::handleGetLibraryStatuses );
     registerHandler<ReloadLibrary, LibraryCommandStatus>( &API_HANDLER_LIBRARIES::handleReloadLibrary );
     registerHandler<GetItemsFromLibrary, GetItemsResponse>( &API_HANDLER_LIBRARIES::handleGetItemsFromLibrary );
+    registerHandler<SearchLibraries, SearchLibrariesResponse>( &API_HANDLER_LIBRARIES::handleSearchLibraries );
 
     // Only the design-block instance registers LoadAllLibraries: it is the dispatcher that
     // lazily loads the schematic and PCB kifaces and forwards to their per-type loads.  If
@@ -495,5 +500,73 @@ API_HANDLER_LIBRARIES::handleGetItemsFromLibrary( const HANDLER_CONTEXT<GetItems
     }
 
     response.set_status( kiapi::common::types::ItemRequestStatus::IRS_OK );
+    return response;
+}
+
+
+HANDLER_RESULT<SearchLibrariesResponse>
+API_HANDLER_LIBRARIES::handleSearchLibraries( const HANDLER_CONTEXT<SearchLibraries>& aCtx )
+{
+    if( aCtx.Request.type() != ToProtoEnum<LIBRARY_TABLE_TYPE, LibraryType>( m_type ) )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( e );
+    }
+
+    // Like the library chooser, every whitespace-separated term must match
+    std::vector<std::unique_ptr<EDA_COMBINED_MATCHER>> matchers;
+    wxStringTokenizer tokenizer( wxString::FromUTF8( aCtx.Request.query() ) );
+
+    while( tokenizer.HasMoreTokens() )
+        matchers.emplace_back( std::make_unique<EDA_COMBINED_MATCHER>( tokenizer.GetNextToken().Lower(), CTX_LIBITEM ) );
+
+    if( matchers.empty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "SearchLibraries requires a non-empty query" );
+        return tl::unexpected( e );
+    }
+
+    LIBRARY_MANAGER_ADAPTER* adapter = adapterForProject( Pgm().GetSettingsManager().Prj() );
+
+    if( !adapter )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "no library adapter is available for this library type" );
+        return tl::unexpected( e );
+    }
+
+    SearchLibrariesResponse response;
+
+    for( const LIBRARY_TABLE_ROW* row : adapter->Rows() )
+    {
+        if( row->Disabled() )
+            continue;
+
+        const wxString& nickname = row->Nickname();
+
+        // Libraries that are not loaded yet return no names; LoadAllLibraries loads them all
+        for( const wxString& itemName : getItemNames( *adapter, nickname ) )
+        {
+            wxString candidate = ( nickname + wxS( ":" ) + itemName ).Lower();
+
+            bool matches = std::ranges::all_of( matchers,
+                                                [&]( const std::unique_ptr<EDA_COMBINED_MATCHER>& aMatcher )
+                                                {
+                                                    return aMatcher->Find( candidate );
+                                                } );
+
+            if( matches )
+            {
+                kiapi::common::types::LibraryIdentifier* id = response.add_items();
+                id->set_library_nickname( nickname.ToUTF8() );
+                id->set_entry_name( itemName.ToUTF8() );
+            }
+        }
+    }
+
     return response;
 }
