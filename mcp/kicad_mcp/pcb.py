@@ -136,7 +136,6 @@ class BoardEditor:
         self.session = session
         self.freerouting_jar = freerouting_jar
         self.java = java or shutil.which("java")
-        self._footprint_libraries_loaded = False
 
     # ------------------------------------------------------------------ document
 
@@ -157,29 +156,7 @@ class BoardEditor:
         return self.session.board_document
 
     def _load_footprint_libraries(self) -> None:
-        if self._footprint_libraries_loaded and self.session.board_document is not None:
-            return
-
-        client = self._client()
-
-        try:
-            client.send(lc.LoadAllLibraries(type=[lt.LT_FOOTPRINT]), lt.LibraryCommandStatus)
-        except Exception:
-            return  # GUI mode preloads libraries itself
-
-        deadline = time.time() + 180
-
-        while time.time() < deadline:
-            status = client.send(lc.GetLibraryStatuses(types=[lt.LT_FOOTPRINT], scope=lt.LTS_BOTH),
-                                 lc.LibraryStatusResponse)
-
-            if all(e.status not in (lt.LLS_LOADING, lt.LLS_UNKNOWN) for e in status.libraries):
-                self._footprint_libraries_loaded = True
-                return
-
-            time.sleep(0.5)
-
-        raise RuntimeError("timed out loading the footprint libraries")
+        self.session.load_libraries(lt.LT_FOOTPRINT)
 
     def open_or_create(self) -> str:
         """Open the project's board, creating an empty one if it does not exist yet."""

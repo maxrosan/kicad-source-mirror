@@ -89,6 +89,15 @@ O servidor está registrado para este projeto no `.mcp.json` da raiz do reposit�
   que tem arquivo de trava (`~<projeto>.kicad_pro.lck`). Para criar projeto novo com o KiCad
   aberto, use `headless`.
 - `KICAD_API_SOCKET`: força o modo ao vivo num socket específico.
+- `KICAD_MCP_IDLE_RELEASE_S`: no modo headless, segundos sem uso até o MCP fechar o projeto
+  (padrão 120). Assim a trava do projeto só existe enquanto o Claude está trabalhando; a próxima
+  ferramenta reabre o projeto sozinha (e se recusa se outro KiCad o abriu nesse meio tempo).
+
+O `kicad-cli` do modo headless roda num Job Object do Windows e morre junto com o MCP, mesmo
+se o MCP for encerrado à força. Uma morte abrupta não remove a trava do projeto, então o MCP
+registra as travas que cria (`%TEMP%\kicad-mcp\locks.json`) e apaga as de MCPs que já não
+existem quando inicia ou abre um projeto. Travas de outros KiCads nunca são apagadas. Se o
+`kicad-cli` morrer sozinho, o MCP sobe outro e reabre o projeto.
 - `FREEROUTING_JAR`: caminho do `.jar` do Freerouting, para o `autoroute`. Instalado em
   `build\tools\freerouting-2.5.0.jar` (release oficial do GitHub, SHA-256 conferido) e já
   configurado no `.mcp.json`.

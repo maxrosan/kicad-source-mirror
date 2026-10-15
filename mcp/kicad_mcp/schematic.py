@@ -6,17 +6,20 @@ point, instead of drawing wires between pins. Labels are reliable to place autom
 """
 
 import atexit
+import contextlib
 import json
 import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import netlist as netlist_mod
 from .client import ApiError, KiCadClient, running_kicad_socket
+from .proc import LockRegistry, kill_with_parent
 
 from common.commands import base_commands_pb2 as bc  # noqa: E402  (path set up by .client)
 from common.commands import editor_commands_pb2 as ed
@@ -34,6 +37,15 @@ GRID_NM = 1_270_000          # KiCad's default 50 mil schematic grid
 LABEL_TEXT_NM = 1_270_000    # 1.27 mm, KiCad's default label text size
 LAYOUT_MARGIN_NM = 5_080_000  # room kept around each symbol's pins for net labels
 TITLE_BLOCK_NM = (175_000_000, 160_000_000)  # top-left corner of the A4 title block area
+IDLE_RELEASE_S = float(os.environ.get("KICAD_MCP_IDLE_RELEASE_S", "120"))
+
+# Project locks taken by this MCP's headless servers (see proc.LockRegistry)
+_LOCKS = LockRegistry(Path(tempfile.gettempdir()) / "kicad-mcp" / "locks.json")
+
+
+def _lock_path(schematic: Path) -> Path:
+    """KiCad's project lock file for a schematic."""
+    return schematic.with_name(f"~{schematic.stem}.kicad_pro.lck")
 
 # Direction from a pin's connection point towards the symbol body, per pin orientation
 # (schematic coordinates: +x right, +y down).
@@ -204,6 +216,13 @@ class SchematicSession:
         self._client: KiCadClient | None = None
         self._socket_path = socket_path
         self._attached = socket_path is not None
+        self._lock = threading.RLock()
+        self._last_activity = time.time()
+        self._release_timer: threading.Timer | None = None
+        # Project closed while idle, to reopen on the next tool call
+        self._reopen_schematic: Path | None = None
+        self._reopen_board = False
+        _LOCKS.sweep()  # locks left by kicad-mcp servers that were killed
         self._libraries_loaded = False
         self.document: bt.DocumentSpecifier | None = None
         self.schematic_path: Path | None = None
@@ -240,7 +259,87 @@ class SchematicSession:
                 [str(self.kicad_cli), "api-server", "--socket", self._socket_path],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # If this MCP process dies without cleaning up, Windows ends kicad-cli with it.
+        kill_with_parent(self._process)
         atexit.register(self.shutdown)
+
+    # ------------------------------------------------------------------ activity
+
+    @contextlib.contextmanager
+    def activity(self):
+        """Wrap each tool call: reopens a released project, then schedules its release.
+
+        A headless server keeps the project open (and KiCad's lock file present) only while
+        Claude is working. After IDLE_RELEASE_S without calls the project is closed, so the
+        user can open it in KiCad without the "already open" warning.
+        """
+        with self._lock:
+            if self._process is not None and self._process.poll() is not None:
+                # Our kicad-cli died: start a new one and reopen what was open.
+                if self.schematic_path is not None:
+                    _LOCKS.remove_own(_lock_path(self.schematic_path))
+
+                self._remember_documents()
+                self._client = None
+                self._process = None
+                self._socket_path = None
+
+            if self._reopen_schematic is not None:
+                self._reopen()
+
+            self._last_activity = time.time()
+
+            try:
+                yield
+            finally:
+                self._last_activity = time.time()
+                self._schedule_release()
+
+    def _remember_documents(self) -> None:
+        if self.schematic_path is not None:
+            self._reopen_schematic = self.schematic_path
+            self._reopen_board = self.board_document is not None
+            self.document = None
+            self.board_document = None
+            self.schematic_path = None
+
+    def _reopen(self) -> None:
+        path, board = self._reopen_schematic, self._reopen_board
+        self._reopen_schematic = None
+        self._reopen_board = False
+        self.open_schematic(str(path))
+
+        if board:
+            self.load_libraries(lt.LT_FOOTPRINT)
+            response = self.client().send(
+                    pc.OpenDocument(type=bt.DOCTYPE_PCB, path=str(path.with_suffix(".kicad_pcb"))),
+                    pc.OpenDocumentResponse)
+            self.board_document = response.document
+
+    def _schedule_release(self) -> None:
+        if self._process is None or self.document is None:
+            return  # nothing to release in live mode or with no project open
+
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+
+        self._release_timer = threading.Timer(IDLE_RELEASE_S, self._release_if_idle)
+        self._release_timer.daemon = True
+        self._release_timer.start()
+
+    def _release_if_idle(self) -> None:
+        with self._lock:
+            if time.time() - self._last_activity < IDLE_RELEASE_S - 1 or self.document is None:
+                return
+
+            try:
+                self.client().send(pc.CloseAllDocuments(force=True), empty_pb2.Empty)
+            except Exception:
+                return
+
+            _LOCKS.forget(_lock_path(self.schematic_path))
+            self._remember_documents()
+            self._libraries_loaded = False
 
     @staticmethod
     def _connect(socket_path: str) -> KiCadClient:
@@ -259,11 +358,17 @@ class SchematicSession:
         raise RuntimeError(f"could not reach the KiCad API server at {socket_path}: {last_error}")
 
     def shutdown(self) -> None:
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+
         if self._client is not None:
             # Closing releases the project lock file, so KiCad can open the project afterwards.
             if self._process is not None:
                 try:
                     self._client.send(pc.CloseAllDocuments(force=True), empty_pb2.Empty)
+
+                    if self.schematic_path is not None:
+                        _LOCKS.forget(_lock_path(self.schematic_path))
                 except Exception:
                     pass
 
@@ -283,33 +388,35 @@ class SchematicSession:
     def version(self) -> str:
         return self.client().send(bc.GetVersion(), bc.GetVersionResponse).version.full_version
 
-    def load_symbol_libraries(self) -> None:
-        """The headless server loads libraries on request and asynchronously."""
-        if self._libraries_loaded:
-            return
+    def load_libraries(self, library_type: int) -> None:
+        """Load all libraries of a type (LT_SYMBOL, LT_FOOTPRINT) and wait for them.
 
+        The headless server loads libraries on request and asynchronously; the GUI preloads
+        them itself and does not offer LoadAllLibraries."""
         client = self.client()
 
         try:
-            client.send(lc.LoadAllLibraries(type=[lt.LT_SYMBOL]), lt.LibraryCommandStatus)
+            client.send(lc.LoadAllLibraries(type=[library_type]), lt.LibraryCommandStatus)
         except ApiError:
-            # The GUI preloads libraries itself and does not offer LoadAllLibraries
-            self._libraries_loaded = True
             return
 
-        deadline = time.time() + 120
+        deadline = time.time() + 180
 
         while time.time() < deadline:
-            status = client.send(lc.GetLibraryStatuses(types=[lt.LT_SYMBOL], scope=lt.LTS_BOTH),
+            status = client.send(lc.GetLibraryStatuses(types=[library_type], scope=lt.LTS_BOTH),
                                  lc.LibraryStatusResponse)
 
             if all(entry.status not in (lt.LLS_LOADING, lt.LLS_UNKNOWN) for entry in status.libraries):
-                self._libraries_loaded = True
                 return
 
             time.sleep(0.5)
 
-        raise RuntimeError("timed out loading the symbol libraries")
+        raise RuntimeError(f"timed out loading the {lt.LibraryType.Name(library_type)} libraries")
+
+    def load_symbol_libraries(self) -> None:
+        if not self._libraries_loaded:
+            self.load_libraries(lt.LT_SYMBOL)
+            self._libraries_loaded = True
 
     # ------------------------------------------------------------------ documents
 
@@ -321,6 +428,10 @@ class SchematicSession:
 
     def _close_all(self) -> None:
         self.client().send(pc.CloseAllDocuments(force=True), empty_pb2.Empty)
+
+        if self.schematic_path is not None:
+            _LOCKS.forget(_lock_path(self.schematic_path))
+
         self.document = None
         self.schematic_path = None
         self.board_document = None
@@ -370,6 +481,7 @@ class SchematicSession:
                                       pc.OpenDocumentResponse)
         self.document = response.document
         self.schematic_path = sch
+        _LOCKS.record(_lock_path(sch))
         self.load_symbol_libraries()
         self.save()
         return str(sch)
@@ -386,9 +498,9 @@ class SchematicSession:
         if not sch.exists():
             raise RuntimeError(f"{sch} does not exist")
 
-        lock = sch.with_name(f"~{sch.stem}.kicad_pro.lck")
+        lock = _lock_path(sch)
 
-        if lock.exists():
+        if not _LOCKS.remove_if_stale(lock):
             raise RuntimeError(
                     f"the project is open in another KiCad ({lock.name} exists). Editing it here "
                     f"too would let both save over each other: open it in your KiCad window and "
@@ -400,6 +512,7 @@ class SchematicSession:
                                       pc.OpenDocumentResponse)
         self.document = response.document
         self.schematic_path = sch
+        _LOCKS.record(_lock_path(sch))
         self.load_symbol_libraries()
         return str(sch)
 
